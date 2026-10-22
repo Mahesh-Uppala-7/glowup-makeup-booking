@@ -1,0 +1,209 @@
+// Prisma schema for the Makeup Booking platform
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Roles supported by the platform.
+enum Role {
+  CUSTOMER
+  ARTIST
+  ADMIN
+}
+
+/// High-level grouping for makeup services.
+enum ServiceCategory {
+  BASIC
+  PARTY
+  BRIDAL
+  ENGAGEMENT
+  HAIR
+  SPECIAL
+}
+
+/// Lifecycle of a booking.
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+/// Lifecycle of a payment.
+enum PaymentStatus {
+  CREATED
+  PAID
+  FAILED
+  REFUNDED
+}
+
+/// A platform user. Both customers and artists authenticate with a mobile number.
+model User {
+  id        String   @id @default(cuid())
+  mobile    String   @unique
+  name      String?
+  email     String?  @unique
+  role      Role     @default(CUSTOMER)
+  avatarUrl String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  artistProfile ArtistProfile?
+  bookings      Booking[]      @relation("CustomerBookings")
+  pushTokens    PushToken[]
+
+  @@index([mobile])
+}
+
+/// Short-lived one-time passwords for mobile-number login.
+model OtpVerification {
+  id        String   @id @default(cuid())
+  mobile    String
+  codeHash  String
+  purpose   String   @default("LOGIN")
+  expiresAt DateTime
+  consumed  Boolean  @default(false)
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([mobile])
+}
+
+/// Extended profile for makeup artists.
+model ArtistProfile {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName     String
+  bio             String?
+  experienceYears Int      @default(0)
+  city            String?
+  address         String?
+  latitude        Float? // service-area location for "nearby" search
+  longitude       Float?
+  rating          Float    @default(0)
+  ratingCount     Int      @default(0)
+  isVerified      Boolean  @default(false)
+  isAvailable     Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  services     ArtistService[]
+  availability AvailabilitySlot[]
+  bookings     Booking[]          @relation("ArtistBookings")
+  portfolio    PortfolioImage[]
+}
+
+/// A portfolio/gallery image uploaded by an artist to showcase their work.
+model PortfolioImage {
+  id        String        @id @default(cuid())
+  artistId  String
+  artist    ArtistProfile @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  url       String
+  caption   String?
+  createdAt DateTime      @default(now())
+
+  @@index([artistId])
+}
+
+/// Expo push notification token registered by a user's device.
+model PushToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  platform  String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+/// Catalogue of makeup services (e.g. Basic ₹600, Bridal ₹1300).
+model Service {
+  id          String          @id @default(cuid())
+  name        String
+  description String?
+  category    ServiceCategory @default(BASIC)
+  basePrice   Int // price in INR (whole rupees)
+  durationMin Int             @default(60)
+  imageUrl    String?
+  isActive    Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  artistServices ArtistService[]
+  bookings       Booking[]
+}
+
+/// Join table: which services an artist offers and at what price.
+model ArtistService {
+  id        String        @id @default(cuid())
+  artistId  String
+  artist    ArtistProfile @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  serviceId String
+  service   Service       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  price     Int // artist's price for this service (INR)
+
+  @@unique([artistId, serviceId])
+}
+
+/// Recurring weekly working hours for an artist, used to compute bookable slots.
+model AvailabilitySlot {
+  id        String        @id @default(cuid())
+  artistId  String
+  artist    ArtistProfile @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  dayOfWeek Int // 0 = Sunday ... 6 = Saturday
+  startTime String // "HH:mm" 24h, e.g. "09:00"
+  endTime   String // "HH:mm" 24h, e.g. "18:00"
+  isActive  Boolean       @default(true)
+
+  @@index([artistId, dayOfWeek])
+}
+
+/// A customer's booking of an artist for a service at a specific date/time.
+model Booking {
+  id          String        @id @default(cuid())
+  customerId  String
+  customer    User          @relation("CustomerBookings", fields: [customerId], references: [id])
+  artistId    String
+  artist      ArtistProfile @relation("ArtistBookings", fields: [artistId], references: [id])
+  serviceId   String
+  service     Service       @relation(fields: [serviceId], references: [id])
+  scheduledAt DateTime
+  durationMin Int           @default(60)
+  status      BookingStatus @default(PENDING)
+  amount      Int // total payable in INR
+  address     String?
+  notes       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  payment Payment?
+
+  @@index([artistId, scheduledAt])
+  @@index([customerId])
+}
+
+/// Payment record linked to a booking (Razorpay).
+model Payment {
+  id                String        @id @default(cuid())
+  bookingId         String        @unique
+  booking           Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  amount            Int
+  currency          String        @default("INR")
+  status            PaymentStatus @default(CREATED)
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  razorpaySignature String?
+  method            String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+}

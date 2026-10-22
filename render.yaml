@@ -1,0 +1,57 @@
+# Render Blueprint — provisions the database, API, and web app in one click.
+# Docs: https://render.com/docs/blueprint-spec
+# After pushing to GitHub: Render Dashboard → New → Blueprint → pick this repo.
+
+databases:
+  - name: glowup-db
+    databaseName: makeup_app
+    user: glowup
+    plan: free
+
+services:
+  # ---------------- Backend API (Express + Prisma) ----------------
+  - type: web
+    name: glowup-api
+    runtime: node
+    plan: free
+    rootDir: backend
+    # --include=dev ensures TypeScript/Prisma/tsx are available for the build.
+    buildCommand: npm install --include=dev && npx prisma generate && npm run build
+    # Create/sync tables and load demo data, then start the server.
+    startCommand: npx prisma db push --skip-generate && (npm run db:seed || echo "seed skipped") && npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: glowup-db
+          property: connectionString
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      # Dev OTP mode returns the code in the API response (no SMS provider needed for the demo).
+      - key: OTP_DEV_MODE
+        value: "true"
+      - key: CORS_ORIGINS
+        value: "*"
+
+  # ---------------- Web app (Expo web export, static CDN) ----------------
+  - type: web
+    name: glowup-web
+    runtime: static
+    rootDir: app
+    buildCommand: npm install && npx expo export --platform web
+    staticPublishPath: dist
+    envVars:
+      # Automatically points the web app at the API's public URL.
+      - key: EXPO_PUBLIC_API_URL
+        fromService:
+          name: glowup-api
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
